@@ -3,7 +3,7 @@ for Bachelor of Engineering (Hons.) Mechanical.
 
 This project completed using husky_package and rtabmap_ros along with python code to make the robot can move autonomously when navigating in constrained enviroment.
 
-The description for the code I produced is :
+The description for the codes I produced are :
 
 Husky Navigator used for navigating from point to point that have been setup earlier. 
 It consist of 2 modes which is auto and manual. 
