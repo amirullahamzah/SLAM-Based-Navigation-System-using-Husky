@@ -1,1 +1,122 @@
+#!/usr/bin/env python3
+import rospy
+import json
+import os
+import math
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from actionlib_msgs.msg import GoalID, GoalStatusArray, GoalStatus
+from rosgraph_msgs.msg import Clock
+
+class TimeSync:
+    def __init__(self):
+        self.clock_sub = rospy.Subscriber('/clock', Clock, self.clock_callback)
+        self.clock_received = False
+
+    def clock_callback(self, msg):
+        self.clock_received = True
+
+    def wait_for_time(self):
+        while not self.clock_received and not rospy.is_shutdown():
+            rospy.loginfo("Waiting for simulation time...")
+            rospy.sleep(1)
+        rospy.loginfo("Simulation time received.")
+
+class HuskyNavigator:
+    def __init__(self, auto_mode, sleep_duration):
+        self.auto_mode = auto_mode
+        self.sleep_duration = sleep_duration
+        self.waypoints_file = os.path.join(os.path.expanduser('~'), 'waypoints.json')
+        self.goal_pub = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=1)
+        self.pose_sub = rospy.Subscriber('/amcl_pose', PoseWithCovarianceStamped, self.pose_callback)
+        self.status_sub = rospy.Subscriber('/move_base/status', GoalStatusArray, self.status_callback)
+        self.current_pose = None
+        self.goal_status = None
+
+        if self.auto_mode:
+            rospy.loginfo("Husky Navigator running in auto mode.")
+            self.navigate_waypoints()
+        else:
+            rospy.loginfo("Husky Navigator running in manual mode.")
+            rospy.Subscriber("/move_base_simple/goal", PoseStamped, self.waypoint_callback)
+            self.recorded_waypoints = []
+            rospy.on_shutdown(self.save_waypoints)
+
+    def pose_callback(self, msg):
+        self.current_pose = msg.pose.pose
+
+    def status_callback(self, msg):
+        if msg.status_list:
+            self.goal_status = msg.status_list[-1].status
+
+    def calculate_distance(self, pose1, pose2):
+        return math.sqrt((pose1.position.x - pose2.position.x)**2 + (pose1.position.y - pose2.position.y)**2)
+
+    def wait_for_goal_reach(self, waypoint):
+        rate = rospy.Rate(10)  
+        while not rospy.is_shutdown():
+            if self.current_pose:
+                distance_to_goal = self.calculate_distance(self.current_pose, waypoint.pose)
+                if distance_to_goal < 0.5: 
+                    break
+
+            if self.goal_status in [GoalStatus.SUCCEEDED, GoalStatus.ABORTED, GoalStatus.REJECTED]:
+                break
+            rate.sleep()
+
+    def navigate_waypoints(self):
+        if os.path.isfile(self.waypoints_file):
+            with open(self.waypoints_file, 'r') as file:
+                waypoints = json.load(file)
+
+            for waypoint_data in waypoints:
+                self.goal_status = None
+                waypoint = PoseStamped()
+                waypoint.header.frame_id = "map"
+                waypoint.header.stamp = rospy.Time.now()
+                waypoint.pose.position.x = waypoint_data['position']['x']
+                waypoint.pose.position.y = waypoint_data['position']['y']
+                waypoint.pose.position.z = waypoint_data['position']['z']
+                waypoint.pose.orientation.x = waypoint_data['orientation']['x']
+                waypoint.pose.orientation.y = waypoint_data['orientation']['y']
+                waypoint.pose.orientation.z = waypoint_data['orientation']['z']
+                waypoint.pose.orientation.w = waypoint_data['orientation']['w']
+
+                rospy.loginfo("Navigating to waypoint at position: %s", waypoint.pose.position)
+                self.goal_pub.publish(waypoint)
+                self.wait_for_goal_reach(waypoint)
+            rospy.loginfo("Finished navigating waypoints.")
+        else:
+            rospy.logerr("No waypoints file found.")
+
+    def waypoint_callback(self, msg):
+        rospy.loginfo("Recording waypoint at position: %s", msg.pose.position)
+        self.recorded_waypoints.append({
+            "position": {
+                "x": msg.pose.position.x,
+                "y": msg.pose.position.y,
+                "z": msg.pose.position.z
+            },
+            "orientation": {
+                "x": msg.pose.orientation.x,
+                "y": msg.pose.orientation.y,
+                "z": msg.pose.orientation.z,
+                "w": msg.pose.orientation.w
+            }
+        })
+
+    def save_waypoints(self):
+        with open(self.waypoints_file, 'w') as file:
+            json.dump(self.recorded_waypoints, file)
+        rospy.loginfo("Saved waypoints to %s", self.waypoints_file)
+
+if __name__ == '__main__':
+    rospy.init_node('husky_navigator')
+    auto_mode = rospy.get_param('~auto', False)
+    sleep_duration = rospy.get_param('~sleep_duration', 0.5)
+
+    time_sync = TimeSync()
+    time_sync.wait_for_time() 
+
+    navigator = HuskyNavigator(auto_mode, sleep_duration)
+    rospy.spin()
 
